@@ -205,7 +205,7 @@
       <button id="addCategory" class="ghost">追加</button>
     </div>
     <div id="chips" class="chips"></div>
-    <p class="help">初期設定：木部・扉・浴槽・床・その他。追加・削除した内容も自動保存されます。</p>
+    <p class="help">初期設定：木部・サッシ・浴室内・SD枠・玄関扉・その他。追加・削除した内容も自動保存されます。</p>
   </section>
 
   <section class="card">
@@ -223,8 +223,8 @@
 
 <script>
 (() => {
-  const STORAGE_KEY = "repair-counter-v1";
-  const DEFAULT_CATEGORIES = ["木部","扉","浴槽","床","その他"];
+  const STORAGE_KEY = "repair-counter-v2";
+  const DEFAULT_CATEGORIES = ["木部","サッシ","浴室内","SD枠","玄関扉","その他"];
 
   let state = loadState();
   let roomInput = "";
@@ -379,7 +379,18 @@
       }
     }
 
-    reportEl.value = rooms.map(roomLine).join("\n");
+    const totals = state.categories
+      .map(cat => {
+        const total = rooms.reduce((sum, room) => sum + (state.rooms[room][cat] || 0), 0);
+        return total > 0 ? `${cat}×${total}` : null;
+      })
+      .filter(Boolean)
+      .join("　");
+
+    const details = rooms.map(roomLine).join("\n");
+    reportEl.value = totals
+      ? `${totals}${details ? "\n\n" + details : ""}`
+      : details;
   }
 
   function renderChips(){
