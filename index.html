@@ -190,6 +190,9 @@
 
   <section class="card">
     <div class="label">④ 報告用テキスト</div>
+    <div class="settings-row">
+      <input id="siteName" maxlength="60" placeholder="現場名・案件名（例：○○　○○現場）">
+    </div>
     <textarea id="report" readonly placeholder="記録すると自動で作成されます。"></textarea>
     <div class="actions">
       <button id="copyBtn" class="action">コピー</button>
@@ -229,6 +232,7 @@
   let state = loadState();
   let roomInput = "";
   let activeRoom = state.activeRoom || "";
+  state.siteName = state.siteName || "";
   let history = [];
 
   const $ = (id) => document.getElementById(id);
@@ -238,6 +242,7 @@
   const currentSummary = $("currentSummary");
   const recordsEl = $("records");
   const reportEl = $("report");
+  const siteNameEl = $("siteName");
   const recordCountEl = $("recordCount");
   const roomStatus = $("roomStatus");
   const shareStatus = $("shareStatus");
@@ -246,16 +251,17 @@
   function loadState(){
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
-      if(!raw) return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:""};
+      if(!raw) return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:""};
       const parsed = JSON.parse(raw);
       if(!Array.isArray(parsed.categories) || typeof parsed.rooms !== "object") throw new Error();
       return {
         categories: parsed.categories.length ? parsed.categories : [...DEFAULT_CATEGORIES],
         rooms: parsed.rooms || {},
-        activeRoom: parsed.activeRoom || ""
+        activeRoom: parsed.activeRoom || "",
+        siteName: parsed.siteName || ""
       };
     }catch{
-      return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:""};
+      return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:""};
     }
   }
 
@@ -388,9 +394,14 @@
       .join("　");
 
     const details = rooms.map(roomLine).join("\n");
-    reportEl.value = totals
+    const body = totals
       ? `${totals}${details ? "\n\n" + details : ""}`
       : details;
+
+    const siteName = (state.siteName || "").trim();
+    reportEl.value = siteName
+      ? `${siteName}${body ? "\n" + body : ""}`
+      : body;
   }
 
   function renderChips(){
@@ -410,6 +421,9 @@
   }
 
   function renderAll(){
+    if(siteNameEl && siteNameEl.value !== (state.siteName || "")) {
+      siteNameEl.value = state.siteName || "";
+    }
     renderRoomInput();
     renderCurrent();
     renderCategories();
@@ -561,6 +575,12 @@
   $("addCategory").addEventListener("click", addCategory);
   $("newCategory").addEventListener("keydown", e => {
     if(e.key === "Enter") addCategory();
+  });
+
+  siteNameEl.addEventListener("input", () => {
+    state.siteName = siteNameEl.value;
+    saveState();
+    renderRecords();
   });
 
   $("clearAll").addEventListener("click", () => {
