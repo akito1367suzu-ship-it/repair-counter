@@ -203,7 +203,7 @@
 
   <section class="card">
     <div class="label">社員同士のデータ合算</div>
-    <p class="help">自分の集計データをコピーしてLINE等で送り、受け取った側が貼り付けて合算できます。同じデータの二重読み込みは防止します。</p>
+    <p class="help">「合算用データをコピー」で専用データをLINE等で送り、受け取った側が貼り付けて合算できます。④の「コピー」とは別です。同じデータの二重読み込みは防止します。</p>
 
     <div class="actions">
       <button id="copyMergeData" class="action">合算用データをコピー</button>
@@ -528,19 +528,49 @@
     const bytes = new TextEncoder().encode(json);
     let binary = "";
     for(const byte of bytes) binary += String.fromCharCode(byte);
-    return "REPAIRCOUNT1:" + btoa(binary);
+    const encoded = btoa(binary);
+    return `【リペア合算データ】\nREPAIRCOUNT1:${encoded}:ENDREPAIRCOUNT1`;
   }
 
   function decodeMergePayload(text){
-    const raw = String(text || "").trim();
-    if(!raw.startsWith("REPAIRCOUNT1:")) throw new Error("形式が違います。");
-    const encoded = raw.slice("REPAIRCOUNT1:".length);
-    const binary = atob(encoded);
-    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
-    const json = new TextDecoder().decode(bytes);
-    const payload = JSON.parse(json);
+    let raw = String(text || "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .trim();
 
-    if(!payload || payload.version !== 1) throw new Error("対応していないデータです。");
+    const marker = "REPAIRCOUNT1:";
+    const start = raw.indexOf(marker);
+
+    if(start < 0){
+      throw new Error("合算用データが見つかりません。④の「コピー」ではなく「合算用データをコピー」を使ってください。");
+    }
+
+    let body = raw.slice(start + marker.length);
+    const endMarker = ":ENDREPAIRCOUNT1";
+    const end = body.indexOf(endMarker);
+    if(end >= 0) body = body.slice(0, end);
+
+    body = body
+      .replace(/[\s\u00A0]/g, "")
+      .replace(/[“”"'`]/g, "");
+
+    const match = body.match(/^[A-Za-z0-9+/=]+/);
+    const encoded = match ? match[0] : "";
+
+    if(!encoded){
+      throw new Error("合算用データが空か、途中で欠けています。もう一度コピーしてください。");
+    }
+
+    let payload;
+    try{
+      const binary = atob(encoded);
+      const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+      const json = new TextDecoder().decode(bytes);
+      payload = JSON.parse(json);
+    }catch{
+      throw new Error("合算用データが途中で欠けています。LINEのメッセージ全体をコピーし直してください。");
+    }
+
+    if(!payload || payload.version !== 1) throw new Error("対応していない合算データです。");
     if(typeof payload.packageId !== "string" || !payload.packageId) throw new Error("データIDがありません。");
     if(!Array.isArray(payload.categories)) throw new Error("項目データが壊れています。");
     if(!payload.rooms || typeof payload.rooms !== "object" || Array.isArray(payload.rooms)) throw new Error("部屋データが壊れています。");
@@ -589,6 +619,23 @@
     }
   }
 
+  function summarizeMergePayload(payload){
+    let roomCount = 0;
+    let totalCount = 0;
+
+    for(const [roomKey, importedRoom] of Object.entries(payload.rooms)){
+      const room = String(roomKey).replace(/\D/g, "").slice(0, 6).replace(/^0+(?=\d)/, "");
+      if(!room || !importedRoom || typeof importedRoom !== "object" || Array.isArray(importedRoom)) continue;
+
+      roomCount++;
+      for(const cat of payload.categories){
+        totalCount += normalizeCount(importedRoom[cat]);
+      }
+    }
+
+    return {roomCount, totalCount};
+  }
+
   function mergePayloadIntoState(payload){
     if(state.importedPackageIds.includes(payload.packageId)){
       throw new Error("このデータはすでに合算済みです。二重加算はしていません。");
@@ -632,10 +679,25 @@
   function applyMergeData(){
     try{
       const payload = decodeMergePayload(mergeInput.value);
+
+      if(state.importedPackageIds.includes(payload.packageId)){
+        throw new Error("このデータはすでに合算済みです。二重加算はしていません。");
+      }
+
+      const summary = summarizeMergePayload(payload);
+      const siteLabel = payload.siteName ? `\n現場名：${payload.siteName}` : "";
+      const ok = confirm(
+        `このデータを合算しますか？${siteLabel}\n対象：${summary.roomCount}部屋\n傷数合計：${summary.totalCount}`
+      );
+      if(!ok){
+        mergeStatus.textContent = "合算をキャンセルしました。";
+        return;
+      }
+
       mergePayloadIntoState(payload);
       mergeInput.value = "";
       mergeArea.style.display = "none";
-      mergeStatus.textContent = "データを合算しました。各部屋と合計に反映されています。";
+      mergeStatus.textContent = `${summary.roomCount}部屋・傷数${summary.totalCount}件を合算しました。`;
       renderAll();
     }catch(err){
       mergeStatus.textContent = err && err.message ? err.message : "合算できませんでした。";
