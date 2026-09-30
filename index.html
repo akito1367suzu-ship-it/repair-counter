@@ -202,6 +202,25 @@
   </section>
 
   <section class="card">
+    <div class="label">社員同士のデータ合算</div>
+    <p class="help">自分の集計データをコピーしてLINE等で送り、受け取った側が貼り付けて合算できます。同じデータの二重読み込みは防止します。</p>
+
+    <div class="actions">
+      <button id="copyMergeData" class="action">合算用データをコピー</button>
+      <button id="toggleMergeInput" class="action main">データを追加</button>
+    </div>
+
+    <div id="mergeArea" style="display:none;margin-top:10px">
+      <textarea id="mergeInput" placeholder="ここに相手から届いた合算用データを貼り付けてください。"></textarea>
+      <div class="actions">
+        <button id="mergeApply" class="action main">このデータを合算</button>
+        <button id="mergeCancel" class="action">キャンセル</button>
+      </div>
+    </div>
+    <div id="mergeStatus" class="status"></div>
+  </section>
+
+  <section class="card">
     <div class="label">項目をカスタマイズ</div>
     <div class="settings-row">
       <input id="newCategory" maxlength="12" placeholder="例：洗面台">
@@ -233,6 +252,7 @@
   let roomInput = "";
   let activeRoom = state.activeRoom || "";
   state.siteName = state.siteName || "";
+  state.importedPackageIds = Array.isArray(state.importedPackageIds) ? state.importedPackageIds : [];
   let history = [];
 
   const $ = (id) => document.getElementById(id);
@@ -247,11 +267,14 @@
   const roomStatus = $("roomStatus");
   const shareStatus = $("shareStatus");
   const chips = $("chips");
+  const mergeArea = $("mergeArea");
+  const mergeInput = $("mergeInput");
+  const mergeStatus = $("mergeStatus");
 
   function loadState(){
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
-      if(!raw) return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:""};
+      if(!raw) return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:"", importedPackageIds:[]};
       const parsed = JSON.parse(raw);
       if(!Array.isArray(parsed.categories) || typeof parsed.rooms !== "object") throw new Error();
       let categories = parsed.categories.length ? parsed.categories : [...DEFAULT_CATEGORIES];
@@ -264,10 +287,11 @@
         categories,
         rooms: parsed.rooms || {},
         activeRoom: parsed.activeRoom || "",
-        siteName: parsed.siteName || ""
+        siteName: parsed.siteName || "",
+        importedPackageIds: Array.isArray(parsed.importedPackageIds) ? parsed.importedPackageIds : []
       };
     }catch{
-      return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:""};
+      return {categories:[...DEFAULT_CATEGORIES], rooms:{}, activeRoom:"", siteName:"", importedPackageIds:[]};
     }
   }
 
@@ -316,26 +340,19 @@
     categoryGrid.innerHTML = "";
     for(const cat of state.categories){
       const count = activeRoom && state.rooms[activeRoom] ? (state.rooms[activeRoom][cat] || 0) : 0;
-      const btn = document.createElement("button");
-      btn.className = "cat";
-      btn.disabled = !activeRoom;
-      btn.style.opacity = activeRoom ? "1" : ".48";
-      btn.innerHTML = `
+      const card = document.createElement("div");
+      card.className = "cat";
+      card.style.opacity = activeRoom ? "1" : ".48";
+      card.innerHTML = `
         <div class="name">${escapeHTML(cat)}</div>
         <div class="count">現在 ${count}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px">
           <button type="button" class="tiny danger minusBtn" ${activeRoom ? "" : "disabled"}>−1</button>
           <button type="button" class="tiny plusBtn" ${activeRoom ? "" : "disabled"}>＋1</button>
         </div>`;
-      btn.querySelector(".minusBtn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        decrement(cat);
-      });
-      btn.querySelector(".plusBtn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        increment(cat);
-      });
-      categoryGrid.appendChild(btn);
+      card.querySelector(".minusBtn").addEventListener("click", () => decrement(cat));
+      card.querySelector(".plusBtn").addEventListener("click", () => increment(cat));
+      categoryGrid.appendChild(card);
     }
   }
 
@@ -493,6 +510,138 @@
     }
   }
 
+  function normalizeCount(value){
+    const n = Number(value);
+    if(!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n);
+  }
+
+  function createPackageId(){
+    if(window.crypto && typeof window.crypto.randomUUID === "function"){
+      return window.crypto.randomUUID();
+    }
+    return `pkg-${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
+  }
+
+  function encodeMergePayload(payload){
+    const json = JSON.stringify(payload);
+    const bytes = new TextEncoder().encode(json);
+    let binary = "";
+    for(const byte of bytes) binary += String.fromCharCode(byte);
+    return "REPAIRCOUNT1:" + btoa(binary);
+  }
+
+  function decodeMergePayload(text){
+    const raw = String(text || "").trim();
+    if(!raw.startsWith("REPAIRCOUNT1:")) throw new Error("形式が違います。");
+    const encoded = raw.slice("REPAIRCOUNT1:".length);
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
+    const payload = JSON.parse(json);
+
+    if(!payload || payload.version !== 1) throw new Error("対応していないデータです。");
+    if(typeof payload.packageId !== "string" || !payload.packageId) throw new Error("データIDがありません。");
+    if(!Array.isArray(payload.categories)) throw new Error("項目データが壊れています。");
+    if(!payload.rooms || typeof payload.rooms !== "object" || Array.isArray(payload.rooms)) throw new Error("部屋データが壊れています。");
+
+    return payload;
+  }
+
+  function buildMergePayload(){
+    const rooms = {};
+    for(const room of Object.keys(state.rooms)){
+      rooms[room] = {};
+      for(const cat of state.categories){
+        rooms[room][cat] = normalizeCount(state.rooms[room][cat]);
+      }
+    }
+    return {
+      version: 1,
+      packageId: createPackageId(),
+      siteName: (state.siteName || "").trim(),
+      categories: [...state.categories],
+      rooms
+    };
+  }
+
+  async function copyMergeData(){
+    const payload = buildMergePayload();
+    const text = encodeMergePayload(payload);
+
+    try{
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(text);
+      }else{
+        const temp = document.createElement("textarea");
+        temp.value = text;
+        temp.style.position = "fixed";
+        temp.style.opacity = "0";
+        document.body.appendChild(temp);
+        temp.focus();
+        temp.select();
+        document.execCommand("copy");
+        temp.remove();
+      }
+      mergeStatus.textContent = "合算用データをコピーしました。LINEなどで相手に送ってください。";
+    }catch{
+      mergeStatus.textContent = "コピーできませんでした。";
+    }
+  }
+
+  function mergePayloadIntoState(payload){
+    if(state.importedPackageIds.includes(payload.packageId)){
+      throw new Error("このデータはすでに合算済みです。二重加算はしていません。");
+    }
+
+    const importedCategories = [];
+    for(const rawCat of payload.categories){
+      const cat = String(rawCat || "").trim();
+      if(!cat || importedCategories.includes(cat)) continue;
+      importedCategories.push(cat);
+      if(!state.categories.includes(cat)) state.categories.push(cat);
+    }
+
+    const importedRooms = Object.keys(payload.rooms);
+    for(const roomKey of importedRooms){
+      const room = String(roomKey).replace(/\D/g, "").slice(0, 6).replace(/^0+(?=\d)/, "");
+      if(!room) continue;
+
+      ensureRoom(room);
+      const importedRoom = payload.rooms[roomKey];
+      if(!importedRoom || typeof importedRoom !== "object" || Array.isArray(importedRoom)) continue;
+
+      for(const cat of importedCategories){
+        const add = normalizeCount(importedRoom[cat]);
+        const current = normalizeCount(state.rooms[room][cat]);
+        state.rooms[room][cat] = current + add;
+      }
+    }
+
+    if(!(state.siteName || "").trim() && typeof payload.siteName === "string" && payload.siteName.trim()){
+      state.siteName = payload.siteName.trim();
+    }
+
+    state.importedPackageIds.push(payload.packageId);
+    if(state.importedPackageIds.length > 200){
+      state.importedPackageIds = state.importedPackageIds.slice(-200);
+    }
+    saveState();
+  }
+
+  function applyMergeData(){
+    try{
+      const payload = decodeMergePayload(mergeInput.value);
+      mergePayloadIntoState(payload);
+      mergeInput.value = "";
+      mergeArea.style.display = "none";
+      mergeStatus.textContent = "データを合算しました。各部屋と合計に反映されています。";
+      renderAll();
+    }catch(err){
+      mergeStatus.textContent = err && err.message ? err.message : "合算できませんでした。";
+    }
+  }
+
   function addCategory(){
     const input = $("newCategory");
     const name = input.value.trim();
@@ -619,6 +768,22 @@
     saveState();
     renderRecords();
   });
+
+  $("copyMergeData").addEventListener("click", copyMergeData);
+
+  $("toggleMergeInput").addEventListener("click", () => {
+    mergeArea.style.display = "block";
+    mergeInput.focus();
+    mergeStatus.textContent = "";
+  });
+
+  $("mergeCancel").addEventListener("click", () => {
+    mergeArea.style.display = "none";
+    mergeInput.value = "";
+    mergeStatus.textContent = "";
+  });
+
+  $("mergeApply").addEventListener("click", applyMergeData);
 
   $("clearAll").addEventListener("click", () => {
     if(!sortedRooms().length) return;
